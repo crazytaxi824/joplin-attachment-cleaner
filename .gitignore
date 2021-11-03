@@ -1,0 +1,17 @@
+# http://git-scm.com/docs/gitignore
+# 项目根路径下使用 "/" 开头，如果不写 "/" 则在整个项目中进行匹配，类似 "**/"
+/.vscode
+/.idea
+/*.iml
+/.history
+
+# 配置文件永远不要暴露在 github 上，防止密码泄露
+/config.*
+
+# 需要作用任何路径下用，使用 **/ 开头
+**/*.gorun
+**/debug
+**/vendor
+**/go.sum
+
+.golangci.yml

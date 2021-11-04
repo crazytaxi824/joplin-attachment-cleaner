@@ -50,7 +50,7 @@ func (r *Recorder) getAllResources() {
 		// fields only need id.
 		url := fmt.Sprintf("http://localhost:%d/resources?token=%s&fields=id,size&order_by=id&limit=100&page=%d", r.port, r.token, page)
 
-		req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, http.NoBody)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -96,7 +96,7 @@ func (r *Recorder) filterResources() {
 	for id := range r.resources {
 		url := fmt.Sprintf("http://localhost:%d/resources/%s/notes?token=%s&fields=id", r.port, id, r.token)
 
-		req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, http.NoBody)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -135,7 +135,7 @@ func (r *Recorder) deleteOrphanedResources() {
 	for id, size := range r.resources {
 		url := fmt.Sprintf("http://localhost:%d/resources/%s?token=%s", r.port, id, r.token)
 
-		req, err := http.NewRequest("DELETE", url, nil)
+		req, err := http.NewRequest("DELETE", url, http.NoBody)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -211,7 +211,12 @@ func main() {
 	// print result.
 	if r.count < 2 {
 		fmt.Printf("%d resource (%d bytes) has been deleted.\n", r.count, r.totalSize)
-		return
+	} else {
+		fmt.Printf("%d resources (%d bytes) have been deleted.\n", r.count, r.totalSize)
 	}
-	fmt.Printf("%d resources (%d bytes) have been deleted.\n", r.count, r.totalSize)
+
+	for _, id := range r.failToDelete {
+		fmt.Println("fail to delete:")
+		fmt.Printf("  %s\n", id)
+	}
 }

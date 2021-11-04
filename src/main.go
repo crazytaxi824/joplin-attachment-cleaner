@@ -61,7 +61,7 @@ func (r *Recorder) getAllResources() {
 		}
 
 		var resources joplinResponse
-		if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
+		if err = json.NewDecoder(resp.Body).Decode(&resources); err != nil {
 			log.Fatal(err)
 		}
 
@@ -107,7 +107,7 @@ func (r *Recorder) filterResources() {
 		}
 
 		var notes joplinResponse
-		if err := json.NewDecoder(resp.Body).Decode(&notes); err != nil {
+		if err = json.NewDecoder(resp.Body).Decode(&notes); err != nil {
 			log.Fatal(err)
 		}
 

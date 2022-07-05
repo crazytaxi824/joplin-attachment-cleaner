@@ -33,11 +33,11 @@ type Recorder struct {
 }
 
 // Get "http://localhost:port/resources?
-// 		token=Token&
-// 		fields=id,size&
-// 		order_by=id&
-// 		limit=100&
-// 		page=Page"
+//     token=Token&
+//     fields=id,size&
+//     order_by=id&
+//     limit=100&
+//     page=Page"
 func (r *Recorder) getAllResources() {
 	client := http.Client{
 		Timeout: 3 * time.Second,
@@ -86,8 +86,8 @@ func (r *Recorder) getAllResources() {
 
 // delete resources which has no notes.
 // Get "http://localhost:port/resources/:id/notes?
-// 		token=Token&
-// 		fields=id
+//     token=Token&
+//     fields=id
 func (r *Recorder) filterResources() {
 	client := http.Client{
 		Timeout: 3 * time.Second,

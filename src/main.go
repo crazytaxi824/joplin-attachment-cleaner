@@ -1,3 +1,7 @@
+// DOC:
+// https://joplinapp.org/api/references/rest_api/
+// https://joplinapp.org/api/references/rest_api/#resources
+
 package main
 
 import (
@@ -32,6 +36,11 @@ type Recorder struct {
 	failToDelete []string       // fail to deleted resources.
 }
 
+// DOC:
+// https://joplinapp.org/api/references/rest_api/#get-resources
+// https://joplinapp.org/api/references/rest_api/#pagination
+//
+// 获取所有 resources (附件)
 // Get "http://localhost:port/resources?
 //     token=Token&
 //     fields=id,size&
@@ -43,7 +52,8 @@ func (r *Recorder) getAllResources() {
 		Timeout: 3 * time.Second,
 	}
 
-	for page := 1; page > 0; page++ {
+	var mark = true
+	for page := 1; mark; page++ {
 		// limit max restricted to 100.
 		// sort by id.
 		// page start from 1.
@@ -65,6 +75,9 @@ func (r *Recorder) getAllResources() {
 			log.Fatal(err)
 		}
 
+		// close body
+		resp.Body.Close()
+
 		// joplin server return error.
 		if resources.Error != "" {
 			summary := strings.Split(resources.Error, "\n")
@@ -75,16 +88,15 @@ func (r *Recorder) getAllResources() {
 			r.resources[item.ID] = item.Size
 		}
 
-		if !resources.More {
-			page = -100 // stop loop.
-		}
-
-		// close body
-		resp.Body.Close()
+		// 判断后续是否有更多的 resources.
+		mark = resources.More
 	}
 }
 
-// delete resources which has no notes.
+// DOC:
+// https://joplinapp.org/api/references/rest_api/#get-resources-id-notes
+//
+// 找出没有被 notes 引用的 resources.
 // Get "http://localhost:port/resources/:id/notes?
 //     token=Token&
 //     fields=id
@@ -111,7 +123,10 @@ func (r *Recorder) filterResources() {
 			log.Fatal(err)
 		}
 
-		// joplin server return error.
+		// close body
+		resp.Body.Close()
+
+		// joplin server return error. 说明引用该 resources 的 note 不存在.
 		if notes.Error != "" {
 			summary := strings.Split(notes.Error, "\n")
 			log.Fatal(summary[0])
@@ -120,12 +135,10 @@ func (r *Recorder) filterResources() {
 		if len(notes.Items) > 0 {
 			delete(r.resources, id)
 		}
-
-		// close body
-		resp.Body.Close()
 	}
 }
 
+// 根据 resources id 删除无用的 resources.
 // Delete "http://localhost:port/resources/:id?token=Token"
 func (r *Recorder) deleteOrphanedResources() {
 	client := http.Client{
@@ -151,6 +164,9 @@ func (r *Recorder) deleteOrphanedResources() {
 			log.Fatal(err)
 		}
 
+		// close body
+		resp.Body.Close()
+
 		// len(body) > 0 means server returns error message while deleting resources.
 		if len(body) > 0 {
 			var resources joplinResponse
@@ -175,9 +191,6 @@ func (r *Recorder) deleteOrphanedResources() {
 			// deleted resources size.
 			r.totalSize += size
 		}
-
-		// close body
-		resp.Body.Close()
 	}
 }
 

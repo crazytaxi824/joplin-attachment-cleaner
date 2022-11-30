@@ -1,19 +1,23 @@
+// DOC:
+// https://joplinapp.org/api/references/rest_api/
+// https://joplinapp.org/api/references/rest_api/#resources
+
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type Item struct {
 	ID   string `json:"id"`   // resource ID / note ID
-	Size int    `json:"size"` // resource size
+	Size int    `json:"size"` // resource size, 为了记录总共删除了多少 kb 的数据.
 }
 
 // response need to be parsed
@@ -26,146 +30,128 @@ type joplinResponse struct {
 type Recorder struct {
 	port         int            // joplin Web Clipper service port
 	token        string         // joplin token
-	resources    map[string]int // record resource.
+	resources    map[string]int // record resource. {resources_id: resources_size}
 	count        int            // deleteed resource count.
 	totalSize    int            // total size of deleted resources.
 	failToDelete []string       // fail to deleted resources.
 }
 
-// Get "http://localhost:port/resources?
-// 		token=Token&
-// 		fields=id,size&
-// 		order_by=id&
-// 		limit=100&
-// 		page=Page"
-func (r *Recorder) getAllResources() {
+func readRespBody(method, url string, v any) error {
 	client := http.Client{
 		Timeout: 3 * time.Second,
 	}
 
-	for page := 1; page > 0; page++ {
+	req, err := http.NewRequest(method, url, http.NoBody)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	err = json.NewDecoder(resp.Body).Decode(v)
+	// resp.Body 为空的时候, Unmarshal() 会报 EOF. Delete resources 成功之后 resp.Body 为空.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+
+	return nil
+}
+
+// DOC:
+// https://joplinapp.org/api/references/rest_api/#get-resources
+// https://joplinapp.org/api/references/rest_api/#pagination
+//
+// 获取所有 resources (附件)
+// Get "http://localhost:port/resources?
+//     token=Token&
+//     fields=id,size&
+//     order_by=id&
+//     limit=100&
+//     page=Page"
+func (r *Recorder) getAllResources() error {
+	var mark = true
+	for page := 1; mark; page++ {
 		// limit max restricted to 100.
 		// sort by id.
 		// page start from 1.
 		// fields only need id.
 		url := fmt.Sprintf("http://localhost:%d/resources?token=%s&fields=id,size&order_by=id&limit=100&page=%d", r.port, r.token, page)
-
-		req, err := http.NewRequest("GET", url, http.NoBody)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		var resources joplinResponse
-		if err = json.NewDecoder(resp.Body).Decode(&resources); err != nil {
-			log.Fatal(err)
+		err := readRespBody("GET", url, &resources)
+		if err != nil {
+			log.Println(err)
+			return err
 		}
 
 		// joplin server return error.
 		if resources.Error != "" {
-			summary := strings.Split(resources.Error, "\n")
-			log.Fatal(summary[0])
+			log.Println(resources.Error)
+			return errors.New(resources.Error)
 		}
 
 		for _, item := range resources.Items {
 			r.resources[item.ID] = item.Size
 		}
 
-		if !resources.More {
-			page = -100 // stop loop.
-		}
-
-		// close body
-		resp.Body.Close()
+		// 判断后续是否有更多的 resources.
+		mark = resources.More
 	}
+
+	return nil
 }
 
-// delete resources which has no notes.
+// DOC:
+// https://joplinapp.org/api/references/rest_api/#get-resources-id-notes
+//
+// 找出没有被 notes 引用的 resources.
 // Get "http://localhost:port/resources/:id/notes?
-// 		token=Token&
-// 		fields=id
-func (r *Recorder) filterResources() {
-	client := http.Client{
-		Timeout: 3 * time.Second,
-	}
-
+//     token=Token&
+//     fields=id
+func (r *Recorder) filterResources() error {
 	for id := range r.resources {
 		url := fmt.Sprintf("http://localhost:%d/resources/%s/notes?token=%s&fields=id", r.port, id, r.token)
 
-		req, err := http.NewRequest("GET", url, http.NoBody)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		resp, err := client.Do(req)
+		var notes joplinResponse
+		err := readRespBody("GET", url, &notes)
 		if err != nil {
 			log.Println(err)
-		}
-
-		var notes joplinResponse
-		if err = json.NewDecoder(resp.Body).Decode(&notes); err != nil {
-			log.Fatal(err)
+			return err
 		}
 
 		// joplin server return error.
 		if notes.Error != "" {
-			summary := strings.Split(notes.Error, "\n")
-			log.Fatal(summary[0])
+			log.Println(notes.Error)
+			return errors.New(notes.Error)
 		}
 
+		// 如果 items 不存在, 说明引用该 resources 的 note 不存在.
 		if len(notes.Items) > 0 {
+			// 从 map 中删除
 			delete(r.resources, id)
 		}
-
-		// close body
-		resp.Body.Close()
 	}
+
+	return nil
 }
 
+// 根据 resources id 删除无用的 resources.
 // Delete "http://localhost:port/resources/:id?token=Token"
-func (r *Recorder) deleteOrphanedResources() {
-	client := http.Client{
-		Timeout: 3 * time.Second,
-	}
-
+func (r *Recorder) deleteOrphanedResources() error {
 	for id, size := range r.resources {
 		url := fmt.Sprintf("http://localhost:%d/resources/%s?token=%s", r.port, id, r.token)
 
-		req, err := http.NewRequest("DELETE", url, http.NoBody)
+		var resp joplinResponse
+		err := readRespBody("DELETE", url, &resp)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return err
 		}
 
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// respsonse return nothing when delete success.
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// len(body) > 0 means server returns error message while deleting resources.
-		if len(body) > 0 {
-			var resources joplinResponse
-
-			err = json.Unmarshal(body, &resources)
-			if err != nil {
-				log.Println(err)
-			}
-
-			// joplin server return error.
-			if resources.Error != "" {
-				summary := strings.Split(resources.Error, "\n")
-				log.Println(summary[0])
-			}
-
+		if resp.Error != "" {
 			// if error add to "failToDelete" slice.
 			r.failToDelete = append(r.failToDelete, id)
 		} else {
@@ -175,25 +161,26 @@ func (r *Recorder) deleteOrphanedResources() {
 			// deleted resources size.
 			r.totalSize += size
 		}
-
-		// close body
-		resp.Body.Close()
 	}
+
+	return nil
 }
 
 func main() {
-	log.SetFlags(log.Ltime)
+	log.SetFlags(log.Llongfile)
 
 	var port = flag.Int("p", 41184, "joplin Web Clipper service port")
 	var token = flag.String("t", "", "joplin Web Clipper Authorization token")
 	flag.Parse()
 
 	if *token == "" {
-		log.Fatal("token is empty")
+		log.Println("token is empty")
+		return
 	}
 
 	if *port > 65535 || *port < 0 {
-		log.Fatal("port is invalid")
+		log.Println("port is invalid")
+		return
 	}
 
 	var r = Recorder{
@@ -202,21 +189,25 @@ func main() {
 		resources: map[string]int{},
 	}
 
-	r.getAllResources() // get all resources' IDs from server.
-	// fmt.Println(r.resources)
-	r.filterResources() // filter resources which has no notes.
-	// fmt.Println(r.resources)
-	r.deleteOrphanedResources() // delete orphaned resources.
-
-	// print result.
-	if r.count < 2 {
-		fmt.Printf("%d resource (%d bytes) has been deleted.\n", r.count, r.totalSize)
-	} else {
-		fmt.Printf("%d resources (%d bytes) have been deleted.\n", r.count, r.totalSize)
+	err := r.getAllResources() // get all resources' IDs from server.
+	if err != nil {
+		return
 	}
 
+	err = r.filterResources() // filter resources which has no notes.
+	if err != nil {
+		return
+	}
+
+	err = r.deleteOrphanedResources() // delete orphaned resources.
+	if err != nil {
+		return
+	}
+
+	// print result.
+	fmt.Printf("%d resource(s) (%d bytes) have been deleted.\n", r.count, r.totalSize)
+
 	for _, id := range r.failToDelete {
-		fmt.Println("fail to delete:")
-		fmt.Printf("  %s\n", id)
+		fmt.Printf("fail to delete: %s\n", id)
 	}
 }

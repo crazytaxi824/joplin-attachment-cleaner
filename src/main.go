@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,12 +13,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
 type Item struct {
-	ID   string `json:"id"`   // resource ID / note ID
-	Size int    `json:"size"` // resource size, 为了记录总共删除了多少 kb 的数据.
+	ID string `json:"id"` // resource ID / note ID
 }
 
 // response need to be parsed
@@ -27,13 +29,9 @@ type joplinResponse struct {
 	More  bool   `json:"has_more"`
 }
 
-type Recorder struct {
-	port         int            // joplin Web Clipper service port
-	token        string         // joplin token
-	resources    map[string]int // record resource. {resources_id: resources_size}
-	count        int            // deleteed resource count.
-	totalSize    int            // total size of deleted resources.
-	failToDelete []string       // fail to deleted resources.
+type Req struct {
+	port  int    // joplin Web Clipper service port
+	token string // joplin token
 }
 
 func readRespBody(method, url string, v any) error {
@@ -61,77 +59,67 @@ func readRespBody(method, url string, v any) error {
 	return nil
 }
 
-// DOC:
+// DOC: Gets all resources.
 // https://joplinapp.org/api/references/rest_api/#get-resources
 // https://joplinapp.org/api/references/rest_api/#pagination
-//
-// 获取所有 resources (附件)
-// Get "http://localhost:port/resources?
-//     token=Token&
-//     fields=id,size&
-//     order_by=id&
-//     limit=100&
-//     page=Page"
-func (r *Recorder) getAllResources() error {
+// returns attachments IDs
+func getAllResources(req Req) (resourcesIDs map[string]struct{}, err error) {
+	resourcesIDs = make(map[string]struct{})
 	var mark = true
 	for page := 1; mark; page++ {
-		// limit max restricted to 100.
-		// sort by id.
-		// page start from 1.
-		// fields only need id.
-		url := fmt.Sprintf("http://localhost:%d/resources?token=%s&fields=id,size&order_by=id&limit=100&page=%d", r.port, r.token, page)
-		var resources joplinResponse
-		err := readRespBody("GET", url, &resources)
+		// GET request:
+		// - limit: max restricted to 100.
+		// - sort: by id.
+		// - page: start from 1.
+		// - fields: columns.
+		url := fmt.Sprintf("http://localhost:%d/resources?token=%s&fields=id&order_by=id&limit=100&page=%d", req.port, req.token, page)
+		var resp joplinResponse
+		err := readRespBody("GET", url, &resp)
 		if err != nil {
 			log.Println(err)
-			return err
+			return nil, err
 		}
 
 		// joplin server return error.
-		if resources.Error != "" {
-			log.Println(resources.Error)
-			return errors.New(resources.Error)
+		if resp.Error != "" {
+			log.Println(resp.Error)
+			return nil, errors.New(resp.Error)
 		}
 
-		for _, item := range resources.Items {
-			r.resources[item.ID] = item.Size
+		for _, item := range resp.Items {
+			resourcesIDs[item.ID] = struct{}{}
 		}
 
 		// 判断后续是否有更多的 resources.
-		mark = resources.More
+		mark = resp.More
 	}
 
-	return nil
+	return resourcesIDs, nil
 }
 
-// DOC:
+// DOC: Gets the notes (IDs) associated with a resource.
 // https://joplinapp.org/api/references/rest_api/#get-resources-id-notes
-//
-// 找出没有被 notes 引用的 resources.
-// Get "http://localhost:port/resources/:id/notes?
-//     token=Token&
-//     fields=id
-func (r *Recorder) filterResources() error {
-	for id := range r.resources {
-		url := fmt.Sprintf("http://localhost:%d/resources/%s/notes?token=%s&fields=id", r.port, id, r.token)
+func filterResources(req Req, resources map[string]struct{}) error {
+	for id := range resources {
+		url := fmt.Sprintf("http://localhost:%d/resources/%s/notes?token=%s&fields=id", req.port, id, req.token)
 
-		var notes joplinResponse
-		err := readRespBody("GET", url, &notes)
+		var resp joplinResponse
+		err := readRespBody("GET", url, &resp)
 		if err != nil {
 			log.Println(err)
 			return err
 		}
 
 		// joplin server return error.
-		if notes.Error != "" {
-			log.Println(notes.Error)
-			return errors.New(notes.Error)
+		if resp.Error != "" {
+			log.Println(resp.Error)
+			return errors.New(resp.Error)
 		}
 
 		// 如果 items 不存在, 说明引用该 resources 的 note 不存在.
-		if len(notes.Items) > 0 {
+		if len(resp.Items) > 0 {
 			// 从 map 中删除
-			delete(r.resources, id)
+			delete(resources, id)
 		}
 	}
 
@@ -140,9 +128,9 @@ func (r *Recorder) filterResources() error {
 
 // 根据 resources id 删除无用的 resources.
 // Delete "http://localhost:port/resources/:id?token=Token"
-func (r *Recorder) deleteOrphanedResources() error {
-	for id, size := range r.resources {
-		url := fmt.Sprintf("http://localhost:%d/resources/%s?token=%s", r.port, id, r.token)
+func deleteResources(req Req, resources map[string]struct{}) error {
+	for id := range resources {
+		url := fmt.Sprintf("http://localhost:%d/resources/%s?token=%s", req.port, id, req.token)
 
 		var resp joplinResponse
 		err := readRespBody("DELETE", url, &resp)
@@ -153,13 +141,8 @@ func (r *Recorder) deleteOrphanedResources() error {
 
 		if resp.Error != "" {
 			// if error add to "failToDelete" slice.
-			r.failToDelete = append(r.failToDelete, id)
-		} else {
-			// count deleted resources.
-			r.count++
-
-			// deleted resources size.
-			r.totalSize += size
+			log.Printf("delete %s error: %s\n", id, resp.Error)
+			return errors.New(resp.Error)
 		}
 	}
 
@@ -183,31 +166,47 @@ func main() {
 		return
 	}
 
-	var r = Recorder{
-		port:      *port,
-		token:     *token,
-		resources: map[string]int{},
+	req := Req{
+		port:  *port,
+		token: *token,
 	}
 
-	err := r.getAllResources() // get all resources' IDs from server.
+	resources, err := getAllResources(req)
 	if err != nil {
 		return
 	}
 
-	err = r.filterResources() // filter resources which has no notes.
+	err = filterResources(req, resources)
 	if err != nil {
 		return
 	}
 
-	err = r.deleteOrphanedResources() // delete orphaned resources.
-	if err != nil {
+	if len(resources) < 1 {
+		fmt.Println("no unused attachments")
 		return
 	}
 
-	// print result.
-	fmt.Printf("%d resource(s) (%d bytes) have been deleted.\n", r.count, r.totalSize)
+	fmt.Println("unused attachments:")
+	for id := range resources {
+		fmt.Println("  - " + id)
+	}
+	fmt.Println("view these attachments in 'Tools > Note attachments'")
 
-	for _, id := range r.failToDelete {
-		fmt.Printf("fail to delete: %s\n", id)
+	// prompt delete resources
+	fmt.Print("delete these resources? [Yes/no]: ")
+	input, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	input = strings.TrimSuffix(input, "\n")
+
+	if input != "yes" && input != "Yes" {
+		return
+	}
+
+	err = deleteResources(req, resources)
+	if err != nil {
+		return
 	}
 }
